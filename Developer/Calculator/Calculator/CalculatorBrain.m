@@ -26,13 +26,14 @@
     return _operandStack;
 }
 
-
+//Create popOperand getter
 - (double)popOperand {
     NSNumber *operandObject = [self.operandStack lastObject];
     if (operandObject) [self.operandStack removeLastObject];
     return [operandObject doubleValue];
 }
 
+//Create pushOperand getter
 - (void) pushOperand:(double)operand {
     NSNumber *operandObject = [NSNumber numberWithDouble:operand];
     [self.operandStack addObject:operandObject];
@@ -42,7 +43,7 @@
     
     double result = 0;
     
-    //perform the operation here, store answer in result.
+    //performs the operation here, store answer in result.
     if ([operation isEqualToString:@"+"]) {
         result = [self popOperand] + [self popOperand];
     } else if ([@"*" isEqualToString:operation]) {
