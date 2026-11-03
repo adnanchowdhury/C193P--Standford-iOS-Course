@@ -1,0 +1,20 @@
+{
+  "runner": "ubuntu-24.04",
+  "node": "22",
+  "php": "",
+  "setup": [],
+  "checks": [],
+  "protected_paths": [
+    "database/migrations",
+    "app/Policies",
+    "app/Http/Middleware",
+    "app/Http/Controllers/Auth",
+    "config/auth.php",
+    "config/services.php",
+    "scripts/deploy",
+    "content",
+    "public/storage"
+  ],
+  "blocked_reason": "Needs a verified macOS/Xcode scheme and simulator validation profile.",
+  "readiness": "Review only until prerequisite is resolved."
+}

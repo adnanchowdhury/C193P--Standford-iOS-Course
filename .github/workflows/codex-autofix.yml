@@ -1,0 +1,242 @@
+name: Codex autofix
+run-name: 'Codex autofix #${{ github.event.pull_request.number }} ${{ github.event.pull_request.head.sha }}'
+
+# Opt-in only after the dedicated API project and repository validation are ready.
+# Repository writers are trusted: like ordinary CI, this is not a security boundary
+# against a collaborator who can change workflows on same-repository branches.
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions: {}
+concurrency:
+  group: codex-autofix-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    if: >-
+      vars.CODEX_AUTOFIX_ENABLED == 'true' &&
+      vars.CODEX_AUTOFIX_BUDGET_READY == '30-usd-hard-limit' &&
+      github.event.review.user.login == 'chatgpt-codex-connector[bot]' &&
+      github.event.review.user.id == 199175422 &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
+    outputs:
+      eligible: ${{ steps.gate.outputs.eligible }}
+      head: ${{ steps.gate.outputs.head }}
+      control: ${{ steps.gate.outputs.control }}
+      php: ${{ steps.gate.outputs.php }}
+      node: ${{ steps.gate.outputs.node }}
+      runner: ${{ steps.gate.outputs.runner }}
+      sparse: ${{ steps.gate.outputs.sparse }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: control
+          persist-credentials: false
+          sparse-checkout: .github/codex-autofix
+      - uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        id: gate
+        with:
+          script: |
+            const control = require('./control/.github/codex-autofix/controller.cjs');
+            await control.githubGate({github, context, core});
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: steps.gate.outputs.eligible == 'true'
+        with:
+          name: autofix-request
+          path: request/request.json
+          retention-days: 7
+          if-no-files-found: error
+
+  preflight:
+    needs: gate
+    if: needs.gate.outputs.eligible == 'true'
+    runs-on: ${{ needs.gate.outputs.runner }}
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    env:
+      REQUEST_FILE: ${{ github.workspace }}/request/request.json
+      TARGET_DIRECTORY: ${{ github.workspace }}/target
+      APP_ENV: testing
+      DB_CONNECTION: sqlite
+      DB_DATABASE: ':memory:'
+      MAIL_MAILER: array
+      QUEUE_CONNECTION: sync
+      CACHE_STORE: array
+      SESSION_DRIVER: array
+      OPENAI_API_KEY: ''
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.gate.outputs.control }}
+          path: control
+          persist-credentials: false
+          sparse-checkout: .github/codex-autofix
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.gate.outputs.head }}
+          path: target
+          persist-credentials: false
+          sparse-checkout: ${{ needs.gate.outputs.sparse }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: autofix-request
+          path: request
+      - uses: ./control/.github/codex-autofix
+        with:
+          php: ${{ needs.gate.outputs.php }}
+          node: ${{ needs.gate.outputs.node }}
+      - name: Confirm the existing checkout is testable before spending API credits
+        run: node control/.github/codex-autofix/controller.cjs preflight
+
+  generate:
+    needs: [gate, preflight]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      REQUEST_FILE: ${{ github.workspace }}/request/request.json
+      TARGET_DIRECTORY: ${{ github.workspace }}/target
+      CHANGES_FILE: ${{ github.workspace }}/candidate/changes.json
+      PROMPT_FILE: ${{ github.workspace }}/autofix-prompt.txt
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.gate.outputs.control }}
+          path: control
+          persist-credentials: false
+          sparse-checkout: .github/codex-autofix
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.gate.outputs.head }}
+          path: target
+          persist-credentials: false
+          sparse-checkout: ${{ needs.gate.outputs.sparse }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: autofix-request
+          path: request
+      - name: Prepare bounded review task
+        run: |
+          mkdir -p candidate
+          node control/.github/codex-autofix/controller.cjs prompt
+      - uses: openai/codex-action@13e9c17417b29e9a276f73ec6ed7fb574137d3c3
+        timeout-minutes: 10
+        with:
+          openai-api-key: ${{ secrets.CODEX_AUTOFIX_OPENAI_API_KEY }}
+          prompt-file: ${{ github.workspace }}/autofix-prompt.txt
+          working-directory: ${{ github.workspace }}/target
+          permission-profile: ':workspace'
+          safety-strategy: drop-sudo
+          allow-bot-users: chatgpt-codex-connector[bot]
+          codex-version: '0.166.0'
+          model: gpt-6.1-sol
+          effort: medium
+      - name: Collect a bounded candidate patch
+        run: node control/.github/codex-autofix/controller.cjs collect
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: autofix-candidate
+          path: candidate/changes.json
+          retention-days: 7
+          if-no-files-found: error
+
+  validate:
+    needs: [gate, generate]
+    runs-on: ${{ needs.gate.outputs.runner }}
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    outputs:
+      digest: ${{ steps.digest.outputs.digest }}
+    env:
+      REQUEST_FILE: ${{ github.workspace }}/request/request.json
+      TARGET_DIRECTORY: ${{ github.workspace }}/target
+      CHANGES_FILE: ${{ github.workspace }}/candidate/changes.json
+      APP_ENV: testing
+      DB_CONNECTION: sqlite
+      DB_DATABASE: ':memory:'
+      MAIL_MAILER: array
+      QUEUE_CONNECTION: sync
+      CACHE_STORE: array
+      SESSION_DRIVER: array
+      OPENAI_API_KEY: ''
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.gate.outputs.control }}
+          path: control
+          persist-credentials: false
+          sparse-checkout: .github/codex-autofix
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.gate.outputs.head }}
+          path: target
+          persist-credentials: false
+          sparse-checkout: ${{ needs.gate.outputs.sparse }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: autofix-request
+          path: request
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: autofix-candidate
+          path: candidate
+      - uses: ./control/.github/codex-autofix
+        with:
+          php: ${{ needs.gate.outputs.php }}
+          node: ${{ needs.gate.outputs.node }}
+      - name: Validate candidate without the API key or write credential
+        id: digest
+        run: |
+          node control/.github/codex-autofix/controller.cjs apply
+          node control/.github/codex-autofix/controller.cjs validate
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: autofix-validated
+          path: candidate/changes.json
+          retention-days: 7
+          if-no-files-found: error
+
+  publish:
+    needs: [gate, validate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      # The publisher never checks out or executes PR code.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.gate.outputs.control }}
+          path: control
+          persist-credentials: false
+          sparse-checkout: .github/codex-autofix
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: autofix-request
+          path: request
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: autofix-validated
+          path: validated
+      - uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        env:
+          VALIDATED_DIGEST: ${{ needs.validate.outputs.digest }}
+        with:
+          script: |
+            const control = require('./control/.github/codex-autofix/controller.cjs');
+            await control.publish({github, context, core});

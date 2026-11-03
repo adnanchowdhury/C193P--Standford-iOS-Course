@@ -1,0 +1,24 @@
+name: Autofix validation runtimes
+description: Prepare runtimes without an API key or repository write credential
+inputs:
+  php:
+    description: PHP version, or empty when not required
+    default: ''
+  node:
+    description: Node.js runtime
+    default: '22'
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+      with:
+        node-version: ${{ inputs.node }}
+    - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      with:
+        python-version: '3.12'
+    - uses: shivammathur/setup-php@d52fc211a0436f8839a587b3b5b8efddab4744ea # v2
+      if: inputs.php != ''
+      with:
+        php-version: ${{ inputs.php }}
+        extensions: mbstring, sqlite3, pdo_sqlite, intl, gd, zip, bcmath
+        coverage: none

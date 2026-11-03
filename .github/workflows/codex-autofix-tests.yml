@@ -1,0 +1,64 @@
+name: Codex autofix controller tests
+on:
+  pull_request:
+    paths:
+      - '.github/codex-autofix/**'
+      - '.github/workflows/codex-autofix*.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  controller:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      configured: ${{ steps.profile.outputs.configured }}
+      php: ${{ steps.profile.outputs.php }}
+      node: ${{ steps.profile.outputs.node }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22'
+      - name: Synthetic guards, Git fixtures and real OS isolation
+        run: node --test .github/codex-autofix/controller.test.cjs
+        env:
+          CODEX_TEST_ISOLATION: 'true'
+      - id: profile
+        name: Read validation profile readiness
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const c = require('./.github/codex-autofix/config.json');
+          const values = {configured: !c.blocked_reason && c.checks.length > 0, php: c.php || '', node: c.node || '22'};
+          for (const [key, value] of Object.entries(values)) fs.appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${value}\n`);
+          NODE
+  profile:
+    name: Repository validation without API usage
+    needs: controller
+    if: needs.controller.outputs.configured == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: control
+          persist-credentials: false
+          sparse-checkout: .github/codex-autofix
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: target
+          persist-credentials: false
+      - uses: ./control/.github/codex-autofix
+        with:
+          php: ${{ needs.controller.outputs.php }}
+          node: ${{ needs.controller.outputs.node }}
+      - name: Prove the profile on a clean isolated runner
+        run: |
+          node - <<'NODE'
+          const path = require('node:path');
+          const c = require('./control/.github/codex-autofix/controller.cjs');
+          c.isolatedChecks(path.resolve('target'), require('./control/.github/codex-autofix/config.json'));
+          NODE
