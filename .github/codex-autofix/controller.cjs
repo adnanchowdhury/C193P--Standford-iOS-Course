@@ -168,7 +168,9 @@ function isolatedChecks(cwd, config) {
     sudo(['chown','--no-dereference','-R',`${process.getuid()}:${process.getgid()}`,root]);
     process.stdout.write(`::${marker}::\n`);
   }
-  if (digest(snapshotFiles(target, tracked)) !== digest(before)) throw new Error('Setup or validation changed tracked files; no fix can be published.');
+  const after = snapshotFiles(target, tracked);
+  const changed = after.filter((item,index) => digest(item) !== digest(before[index])).map(item => item.path);
+  if (changed.length) throw new Error('Setup or validation changed tracked files: ' + JSON.stringify(changed));
   return target;
 }
 
@@ -180,7 +182,7 @@ function snapshotFiles(cwd, names) {
     try { stat = fs.lstatSync(full); } catch (e) { if (e.code === 'ENOENT') return {path:p,missing:true}; throw e; }
     if (stat.isSymbolicLink()) return {path:p,link:fs.readlinkSync(full)};
     if (!stat.isFile()) throw new Error('Unexpected tracked file type.');
-    return {path:p,mode:stat.mode & 0o777,sha:crypto.createHash('sha256').update(fs.readFileSync(full)).digest('hex')};
+    return {path:p,mode:(stat.mode & 0o111) ? '100755' : '100644',sha:crypto.createHash('sha256').update(fs.readFileSync(full)).digest('hex')};
   });
 }
 

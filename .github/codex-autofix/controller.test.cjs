@@ -114,12 +114,13 @@ test('collects deletion without reading outside the worktree',t=>{
 });
 test('cloud validation cannot read or modify trusted runner files or inherit credentials', {skip:process.env.CODEX_TEST_ISOLATION !== 'true'}, t=>{
   const r=repo(t);
+  fs.chmodSync(path.join(r.dir,'src/a.js'),0o664);
   const protectedFile=path.join(os.homedir(), 'codex-isolation-proof-'+process.pid);
   fs.writeFileSync(protectedFile,'trusted');
   t.after(()=>fs.rmSync(protectedFile,{force:true}));
   const quote = s => "'" + s.replace(/'/g, "'\\''") + "'";
   const check = 'node -e ' + quote(`const fs=require('node:fs'); const assert=require('node:assert/strict'); assert.equal(process.env.GITHUB_TOKEN,undefined); assert.equal(process.env.GITHUB_OUTPUT,undefined); assert.throws(()=>fs.readFileSync(${JSON.stringify(protectedFile)})); assert.throws(()=>fs.writeFileSync(${JSON.stringify(protectedFile)},'tampered')); fs.writeFileSync('validation-proof.txt','passed');`);
-  const target=c.isolatedChecks(r.dir,{setup:[],checks:[check]});
+  const target=c.isolatedChecks(r.dir,{setup:[],checks:[check,'chmod g-w src/a.js']});
   t.after(()=>fs.rmSync(path.dirname(target),{recursive:true,force:true}));
   assert.equal(fs.readFileSync(protectedFile,'utf8'),'trusted');
   assert.equal(fs.readFileSync(path.join(target,'validation-proof.txt'),'utf8'),'passed');
