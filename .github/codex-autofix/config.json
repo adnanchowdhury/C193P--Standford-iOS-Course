@@ -16,5 +16,10 @@
     "public/storage"
   ],
   "blocked_reason": "Needs a verified macOS/Xcode scheme and simulator validation profile.",
-  "readiness": "Review only until prerequisite is resolved."
+  "readiness": "Review only until prerequisite is resolved.",
+  "ci_workflows": [
+    {
+      "name": "codex-autofix-tests.yml"
+    }
+  ]
 }

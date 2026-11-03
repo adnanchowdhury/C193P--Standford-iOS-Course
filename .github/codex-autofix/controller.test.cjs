@@ -130,3 +130,46 @@ test('cloud validation refuses changes to any tracked source, even outside the f
   assert.throws(()=>c.isolatedChecks(r.dir,{setup:[],checks:["printf 'tampered\\n' > src/a.js"]}),/changed tracked files/);
   assert.equal(fs.readFileSync(path.join(r.dir,'src/a.js'),'utf8'),'export const value = 1;\n');
 });
+
+function publisherFixture(t) {
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'codex-publisher-test-'));
+  const previous=process.cwd(), previousDigest=process.env.VALIDATED_DIGEST;
+  process.chdir(dir);
+  t.after(()=>{process.chdir(previous); if(previousDigest===undefined)delete process.env.VALIDATED_DIGEST;else process.env.VALIDATED_DIGEST=previousDigest;fs.rmSync(dir,{recursive:true,force:true});});
+  fs.mkdirSync('request');fs.mkdirSync('validated');
+  const event=fixture(), request=c.decide(event);
+  request.config.ci_workflows=[{name:'codex-autofix-tests.yml'},{name:'ci.yml',base_input:'base_sha'}];
+  const bundle={head:request.head,review:request.review,changes:[change]};
+  fs.writeFileSync('request/request.json',JSON.stringify(request));fs.writeFileSync('validated/changes.json',JSON.stringify(bundle));
+  process.env.VALIDATED_DIGEST=c.digest(bundle);
+  const writes=[],dispatches=[];
+  const github={rest:{pulls:{get:async()=>({data:event.pr})},git:{
+    getCommit:async()=>({data:{tree:{sha:'c'.repeat(40)}}}),
+    createTree:async data=>{writes.push({op:'tree',data});return {data:{sha:'d'.repeat(40)}};},
+    createCommit:async data=>{writes.push({op:'commit',data});return {data:{sha:'e'.repeat(40)}};},
+    updateRef:async data=>{writes.push({op:'ref',data});}
+  },actions:{createWorkflowDispatch:async data=>{dispatches.push(data);}}}};
+  const summary={addHeading(){return this;},addRaw(){return this;},async write(){}};
+  return {event,writes,dispatches,args:{github,context:{repo:{owner:'owner',repo:'repo'},runId:9},core:{setOutput(){},summary}}};
+}
+test('publisher rejects an altered artifact before any repository write',async t=>{
+  const f=publisherFixture(t);process.env.VALIDATED_DIGEST='invalid';
+  await assert.rejects(c.publish(f.args),/digest mismatch/);
+  assert.equal(f.writes.length,0);assert.equal(f.dispatches.length,0);
+});
+test('publisher rejects a new PR head without overwriting it',async t=>{
+  const f=publisherFixture(t);f.event.pr.head.sha='f'.repeat(40);
+  await assert.rejects(c.publish(f.args),/PR changed/);
+  assert.equal(f.writes.length,0);assert.equal(f.dispatches.length,0);
+});
+test('publisher makes one non-forced fix commit then dispatches fresh CI',async t=>{
+  const f=publisherFixture(t);await c.publish(f.args);
+  assert.deepEqual(f.writes.map(x=>x.op),['tree','commit','ref']);
+  assert.deepEqual(f.writes[1].data.parents,[head]);
+  assert.equal(f.writes[2].data.force,false);
+  assert.equal(f.writes[2].data.ref,'heads/feature');
+  assert.deepEqual(f.dispatches.map(x=>({id:x.workflow_id,ref:x.ref,inputs:x.inputs})),[
+    {id:'codex-autofix-tests.yml',ref:'feature',inputs:{}},
+    {id:'ci.yml',ref:'feature',inputs:{base_sha:base}}
+  ]);
+});

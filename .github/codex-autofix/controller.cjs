@@ -232,7 +232,12 @@ async function publish({github, context, core}) {
   const commit = await github.rest.git.createCommit({owner, repo, tree: tree.data.sha, parents:[request.head], message:`Fix Codex review findings on PR #${request.pr}\n\n${MARKER} ${request.review}\nCodex-Autofix-Run: ${context.runId}`});
   await github.rest.git.updateRef({owner, repo, ref:`heads/${request.branch}`, sha:commit.data.sha, force:false});
   core.setOutput('commit', commit.data.sha);
-  await core.summary.addHeading('Autofix committed').addRaw(`PR #${request.pr}: ${commit.data.sha}. Validation commands completed on the candidate. No merge or deployment was requested. GitHub does not trigger normal push/PR Actions from GITHUB_TOKEN commits. Required CI needs a supported workflow dispatch at the new ref or a maintainer-authored push (an empty commit is sufficient). Rerunning an old run tests its old SHA, not this new commit.`).write();
+  await core.summary.addHeading('Autofix committed').addRaw(`PR #${request.pr}: ${commit.data.sha}. Candidate validation passed. No merge or deployment was requested.`).write();
+  for (const workflow of request.config.ci_workflows || []) {
+    if (!/^[a-zA-Z0-9_-]+\.ya?ml$/.test(workflow.name) || /deploy|release/i.test(workflow.name)) throw new Error('Invalid CI workflow; commit was preserved.');
+    await github.rest.actions.createWorkflowDispatch({owner,repo,workflow_id:workflow.name,ref:request.branch,inputs:workflow.base_input ? {[workflow.base_input]:request.base} : {}});
+  }
+  await core.summary.addRaw(' CI workflows were explicitly requested for the updated PR branch; check their results before merging.').write();
 }
 
 function local(command) {
